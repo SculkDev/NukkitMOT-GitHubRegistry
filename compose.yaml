@@ -1,0 +1,14 @@
+services:
+  nukkit:
+    image: ghcr.io/sculkdev/nukkitmot-githubregistry:latest
+    restart: unless-stopped
+    ports:
+      - '19132:19132/udp'
+      - '19132:19132/tcp'
+    environment:
+      JAVA_OPTS: '-Xms1G -Xmx2G'
+    volumes:
+      - nukkit-data:/data
+
+volumes:
+  nukkit-data:

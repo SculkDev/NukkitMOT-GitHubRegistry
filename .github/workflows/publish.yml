@@ -1,0 +1,92 @@
+name: Publish patched Nukkit-MOT
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nukkit-mot-publish
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.upstream.outputs.build }}
+      base_image: ${{ steps.upstream.outputs.base_image }}
+      tags: ${{ steps.upstream.outputs.tags }}
+      plan: ${{ steps.upstream.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Test release detection and publishing
+        run: node --test .github/scripts/*.test.cjs
+      - name: Find the newest upstream image not yet published here
+        id: upstream
+        uses: actions/github-script@v8
+        env:
+          UPSTREAM_TAG: ${{ vars.UPSTREAM_TAG || 'stable' }}
+        with:
+          script: |
+            await require('./.github/scripts/check-upstream.cjs')({github, context, core});
+
+  publish:
+    needs: detect
+    if: needs.detect.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build, test, and export the standalone agent
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: agent-artifacts
+          outputs: type=local,dest=dist
+          cache-from: type=gha,scope=nukkit-mot
+      - name: Test both architectures and publish to GHCR
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ needs.detect.outputs.tags }}
+          build-args: |
+            UPSTREAM_IMAGE=${{ needs.detect.outputs.base_image }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.base.name=${{ needs.detect.outputs.base_image }}
+          cache-from: type=gha,scope=nukkit-mot
+          cache-to: type=gha,mode=max,scope=nukkit-mot
+      - name: Publish release and agent JAR after the image succeeds
+        uses: actions/github-script@v8
+        env:
+          RELEASE_PLAN: ${{ needs.detect.outputs.plan }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        with:
+          script: |
+            await require('./.github/scripts/publish-release.cjs')({github, context, core});
